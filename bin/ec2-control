@@ -1,0 +1,172 @@
+#!/usr/bin/env python
+
+"""
+==================================
+Manage EC2 Servers with a name tag
+==================================
+
+A default config path is $HOME/.aws/access
+
+Config Format
+==============
+
+aws_access_key_id = XXXXXXXX
+aws_secret_access_key = XXXXXXXX
+aws_region = us-east-1
+aws_servers_name_suffix = example.com
+
+"""
+
+import sys
+import os
+import argparse
+from ConfigParser import  SafeConfigParser as ConfigParser
+from operator import attrgetter
+
+try:
+    import boto.ec2
+except ImportError:
+    print >>sys.stderr, "Please do '# easy_install boto'."
+
+class Server:
+    def __init__(self, id, name, state, public_dns_name):
+        self.id = id
+        self.name = name
+        self.state = state
+        self.public_dns_name = public_dns_name
+
+    def __repr__(self):
+        return repr((self.name, self.grade, self.age))
+
+class Ec2:
+
+    def __init__(self, config):
+        self.config = config
+        self.ec2 = None
+
+    def connect(self):
+        self.ec2 = boto.ec2.connect_to_region(
+                  self.config.get("aws_region"),
+                  aws_access_key_id = self.config.get("aws_access_key_id"),
+                  aws_secret_access_key = self.config.get("aws_secret_access_key"),
+                  is_secure=True)
+
+    def get_servers(self):
+        if self.ec2 is None:
+            self.connect()
+        
+        s = []
+        for r in self.ec2.get_all_instances():
+            i = r.instances[0]
+            name = i.tags.get('Name', "")
+            suffix = self.config.get("aws_servers_name_suffix")
+            if suffix is None:
+                s.append(Server(i.id, name, i.state, i.public_dns_name))
+            else:
+                if suffix in name:
+                    s.append(Server(i.id, name, i.state, i.public_dns_name))
+        s.sort(key=attrgetter('name'))
+        return s
+
+    def start(self, server):
+        self.ec2.start_instances([server.id])
+
+    def stop(self, server):
+        self.ec2.start_instances([server.id])
+
+    def status(self, server):
+        self.ec2.start_instances([server.id])
+
+class FakeSection(object):
+    def __init__(self, fp):
+        self.fp = fp
+        self.sechead = '[fake_section]\n'
+
+    def readline(self):
+        if self.sechead:
+            try:
+                return self.sechead
+            finally:
+                self.sechead = None
+        else:
+            return self.fp.readline()
+
+def kv_parser(path):
+    cp = ConfigParser()
+    cp.readfp(FakeSection(open(path)))
+    items = cp.items('fake_section')
+    return dict(items)
+
+def parse_args():
+    HOME = os.environ.get("HOME")
+    DEFAULT_AWS_ACCESS_PATH = "%s/.aws/access" % HOME
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('operation', help='start|stop|status')
+    parser.add_argument('ec2name', nargs='?', help='EC2 Name tag')
+    parser.add_argument("--config", "-c", action="store", help="Configure file path", default=DEFAULT_AWS_ACCESS_PATH)
+    parser.add_argument("--suffix", "-s", action="store", help="Name tag suffix", default=None)
+    parser.add_argument("--region", "-r", action="store", help="Target region", default=None)
+    return parser.parse_args()
+
+def parse_config(config_path):
+    config = kv_parser(config_path)
+    if config.get("aws_region") is None:
+        config.update({"aws_region": "us-east-1"})
+    return config
+
+def main():
+    REQUIRE_CONFIG_KEYS = [
+        "aws_access_key_id", 'aws_secret_access_key']
+
+    args = parse_args()
+
+    op = args.operation
+    hostname = args.ec2name
+    config_path = args.config
+
+    if not os.access(config_path, os.F_OK):
+        print >>sys.stderr, 'Please create "%s".' % config_path
+        exit(1)
+
+    config = parse_config(config_path)
+
+    config_check = True
+    for key in config.keys():
+        if key in REQUIRE_CONFIG_KEYS and config.get(key) is None:
+            print >>sys.stderr, """Please setting '%s = XXXXXX' to %s.""" % (key, config_path)
+            config_check = False
+    if config_check is False:
+        exit(1)
+
+    if args.suffix:
+        config.update({"aws_servers_name_suffix": args.suffix})
+    if args.region:
+        config.update({"aws_region": args.region})
+
+    ec2 = Ec2(config)
+    ec2.connect()
+    servers = ec2.get_servers()
+
+    if hostname:
+        targets = [s for s in servers if s.name == hostname]
+    else:
+        targets = servers
+
+    if op == "status":
+        for server in targets:
+            print "%s (%s) %s" %(server.name, server.public_dns_name, server.state)
+    elif op == "start":
+        for server in targets:
+            print "%s is starting..." % server.name
+            ec2.start(server)
+    elif op == "stop":
+        for server in targets:
+            print "%s is stopping..." % server.name
+            ec2.stop(server)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        exit(1)
