@@ -63,7 +63,7 @@ class Ec2:
             if suffix is None:
                 s.append(Server(i.id, name, i.state, i.public_dns_name))
             else:
-                if suffix in name:
+                if name.endswith(suffix):
                     s.append(Server(i.id, name, i.state, i.public_dns_name))
         s.sort(key=attrgetter('name'))
         return s
